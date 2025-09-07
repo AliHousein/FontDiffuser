@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import random
 import gradio as gr
 from sample import (arg_parse, 
@@ -29,7 +30,8 @@ if __name__ == '__main__':
     args = arg_parse()
     args.demo = True
     args.ckpt_dir = 'ckpt'
-    args.ttf_path = 'ttf/KaiXinSongA.ttf'
+    args.ttf_path = 'fonts/NotoSans-Italic-VariableFont_wdth,wght.ttf'  # you can replace it with your own font path
+    args.device = 'cpu'  # <--- Add this line to force CPU usage
 
     # load fontdiffuer pipeline
     pipe = load_fontdiffuer_pipeline(args=args)

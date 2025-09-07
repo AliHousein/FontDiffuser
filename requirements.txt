@@ -1,9 +1,18 @@
+# Core ML libraries
 transformers==4.33.1
 accelerate==0.23.0
 diffusers==0.22.0
-gradio==4.8.0
-pyyaml
-pygame
-opencv-python
-info-nce-pytorch
-kornia
+huggingface_hub==0.16.4
+
+# Web UI / API
+gradio==3.41.2           # last stable release with Pydantic v1 support
+fastapi==0.95.2
+starlette==0.27.0
+pydantic==1.10.14
+
+# Utils
+pyyaml==6.0.1
+pygame==2.5.2
+opencv-python==4.8.0.76
+info-nce-pytorch==0.1.4
+kornia==0.7.0
