@@ -24,8 +24,12 @@ ROOT = Path("data_examples")
 FONTS_DIR = Path("fonts/google_fonts")
 FONTS_DIR.mkdir(parents=True, exist_ok=True)
 
-# Google Fonts API (⚠️ Replace with your real key)
-GOOGLE_FONTS_API = "https://www.googleapis.com/webfonts/v1/webfonts?key=AIzaSyDCSF8IDe0DSpzFQ4W9_HK6O0NhQaCxeVY&sort=popularity"
+# Read API key from environment variable
+GOOGLE_FONTS_API_KEY = os.environ.get("GOOGLE_FONTS_API_KEY")
+if not GOOGLE_FONTS_API_KEY:
+    raise RuntimeError("Please set the GOOGLE_FONTS_API_KEY environment variable.")
+
+GOOGLE_FONTS_API = f"https://www.googleapis.com/webfonts/v1/webfonts?key={GOOGLE_FONTS_API_KEY}&sort=popularity"
 
 
 # --------------------------
