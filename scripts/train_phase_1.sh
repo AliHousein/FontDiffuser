@@ -4,9 +4,9 @@ accelerate launch train.py \
     --data_root="data_examples" \
     --output_dir="outputs/FontDiffuser" \
     --report_to="tensorboard" \
-    --resolution=96 \
-    --style_image_size=96 \
-    --content_image_size=96 \
+    --resolution=128 \
+    --style_image_size=128 \
+    --content_image_size=128 \
     --content_encoder_downsample_size=3 \
     --channel_attn=True \
     --content_start_channel=64 \
@@ -14,7 +14,7 @@ accelerate launch train.py \
     --train_batch_size=16 \
     --perceptual_coefficient=0.01 \
     --offset_coefficient=0.5 \
-    --max_train_steps=440000 \
+    --max_train_steps=100000 \
     --ckpt_interval=40000 \
     --gradient_accumulation_steps=1 \
     --log_interval=50 \
