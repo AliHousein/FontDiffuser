@@ -11,16 +11,16 @@ accelerate launch train.py \
     --channel_attn=True \
     --content_start_channel=64 \
     --style_start_channel=64 \
-    --train_batch_size=16 \
+    --train_batch_size=8 \
     --perceptual_coefficient=0.01 \
     --offset_coefficient=0.5 \
-    --max_train_steps=100000 \
+    --max_train_steps=50000 \
     --ckpt_interval=40000 \
-    --gradient_accumulation_steps=1 \
+    --gradient_accumulation_steps=2 \
     --log_interval=50 \
-    --learning_rate=1e-4 \
+    --learning_rate=5e-5 \
     --lr_scheduler="linear" \
     --lr_warmup_steps=10000 \
     --drop_prob=0.1 \
-    --mixed_precision="no"
+    --mixed_precision="fp16"
     
