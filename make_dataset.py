@@ -1,4 +1,6 @@
 import os
+from dotenv import load_dotenv
+load_dotenv()
 import random
 import string
 import shutil
@@ -17,7 +19,7 @@ VAL_RATIO = 0.2
 CHARSET = string.ascii_uppercase + string.ascii_lowercase + string.digits + ".,!?;:'\"()-_@#&%"
 
 # Use the already-downloaded skeleton font
-CONTENT_FONT_PATH = Path("fonts/NotoSans-Italic-VariableFont_wdth,wght.ttf")
+CONTENT_FONT_PATH = Path("fonts/NotoSans-VariableFont_wdth,wght.ttf")
 
 # Destination dirs
 ROOT = Path("data_examples")
@@ -126,7 +128,7 @@ def build_dataset(content_font_path, style_fonts):
     for idx, ch in enumerate(CHARSET):
         try:
             img = render_char(ch, str(content_font_path))
-            img.save(content_dir / f"char{idx}.png")
+            img.save(content_dir / f"char{idx}.jpg")
         except Exception as e:
             print(f"  Skipped {ch} in content: {e}")
 
@@ -138,7 +140,7 @@ def build_dataset(content_font_path, style_fonts):
         for idx, ch in enumerate(CHARSET):
             try:
                 img = render_char(ch, str(font_path))
-                img.save(style_dir / f"{style_name}+char{idx}.png")
+                img.save(style_dir / f"{style_name}+char{idx}.jpg")
             except Exception as e:
                 print(f"  Skipped {ch} in {style_name}: {e}")
 
