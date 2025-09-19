@@ -14,7 +14,7 @@ accelerate launch train.py \
     --train_batch_size=8 \
     --perceptual_coefficient=0.01 \
     --offset_coefficient=0.5 \
-    --max_train_steps=50000 \
+    --max_train_steps=20000 \
     --ckpt_interval=40000 \
     --gradient_accumulation_steps=2 \
     --log_interval=50 \
