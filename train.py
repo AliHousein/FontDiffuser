@@ -1,4 +1,5 @@
 import os
+import re
 import math
 import time
 import logging
@@ -31,6 +32,7 @@ from utils import (save_args_to_yaml,
 
 logger = get_logger(__name__)
 
+
 def get_args():
     parser = get_parser()
     args = parser.parse_args()
@@ -43,6 +45,123 @@ def get_args():
     args.content_image_size = (content_image_size, content_image_size)
 
     return args
+
+
+def find_latest_checkpoint(output_dir):
+    """
+    Find latest checkpoint folder under output_dir.
+    Accept patterns like: global_step_5000, global-step-5000, global_step-5000, etc.
+    Returns (path, step) or (None, 0) if none found.
+    """
+    if not os.path.isdir(output_dir):
+        return None, 0
+    candidates = []
+    for entry in os.listdir(output_dir):
+        full = os.path.join(output_dir, entry)
+        if not os.path.isdir(full):
+            continue
+        m = re.search(r'global[-_]?step[-_]?(\d+)', entry, flags=re.IGNORECASE)
+        if m:
+            try:
+                step = int(m.group(1))
+                candidates.append((step, full))
+            except Exception:
+                continue
+    if not candidates:
+        return None, 0
+    candidates.sort(key=lambda x: x[0])
+    return candidates[-1][1], candidates[-1][0]
+
+
+def load_model_weights_only(unet, style_encoder, content_encoder, ckpt_dir, map_location=torch.device("cpu")):
+    """
+    Load old-style separate .pth files (unet.pth, style_encoder.pth, content_encoder.pth).
+    Non-fatal on missing files.
+    """
+    loaded_any = False
+    try:
+        unet_path = os.path.join(ckpt_dir, "unet.pth")
+        if os.path.exists(unet_path):
+            unet.load_state_dict(torch.load(unet_path, map_location=map_location))
+            loaded_any = True
+    except Exception as e:
+        print(f"⚠️ Failed to load {unet_path}: {e}")
+
+    try:
+        style_path = os.path.join(ckpt_dir, "style_encoder.pth")
+        if os.path.exists(style_path):
+            style_encoder.load_state_dict(torch.load(style_path, map_location=map_location))
+            loaded_any = True
+    except Exception as e:
+        print(f"⚠️ Failed to load {style_path}: {e}")
+
+    try:
+        content_path = os.path.join(ckpt_dir, "content_encoder.pth")
+        if os.path.exists(content_path):
+            content_encoder.load_state_dict(torch.load(content_path, map_location=map_location))
+            loaded_any = True
+    except Exception as e:
+        print(f"⚠️ Failed to load {content_path}: {e}")
+
+    return loaded_any
+
+
+def load_composite_checkpoint_if_exists(model, optimizer, lr_scheduler, ckpt_dir, accelerator):
+    """
+    Try to load checkpoint.pth in ckpt_dir. If present, restore model + optimizer + scheduler + global_step.
+    Returns restored_step (int) or 0.
+    """
+    ckpt_path = os.path.join(ckpt_dir, "checkpoint.pth")
+    if not os.path.exists(ckpt_path):
+        return 0
+    try:
+        # Map to CPU first (accelerator will move to device), or map to accelerator.device
+        map_loc = torch.device("cpu")
+        # If GPU available on this machine, map to that to avoid extra transfers
+        if torch.cuda.is_available():
+            map_loc = accelerator.device
+        checkpoint = torch.load(ckpt_path, map_location=map_loc)
+
+        # Load model parts (they are raw state dicts)
+        if "unet" in checkpoint:
+            model.unet.load_state_dict(checkpoint["unet"])
+        if "style_encoder" in checkpoint:
+            model.style_encoder.load_state_dict(checkpoint["style_encoder"])
+        if "content_encoder" in checkpoint:
+            model.content_encoder.load_state_dict(checkpoint["content_encoder"])
+
+        # optimizer & scheduler will be loaded after accelerator.prepare()
+        restored_optimizer_state = checkpoint.get("optimizer", None)
+        restored_scheduler_state = checkpoint.get("lr_scheduler", None)
+        restored_step = checkpoint.get("global_step", 0)
+
+        # Return a dict containing loaded state dicts and step for later restoration
+        return {"step": restored_step, "optimizer": restored_optimizer_state, "lr_scheduler": restored_scheduler_state}
+    except Exception as e:
+        print(f"⚠️ Failed to load composite checkpoint {ckpt_path}: {e}")
+        return 0
+
+
+def save_composite_checkpoint(model, optimizer, lr_scheduler, global_step, save_dir):
+    """
+    Save the composite checkpoint dict (model tensors + optimizer + lr_scheduler + global_step)
+    in save_dir/checkpoint.pth. Also keep separate model .pth files for backward compatibility.
+    """
+    os.makedirs(save_dir, exist_ok=True)
+    # Save separate model weights (backward compatible)
+    torch.save(model.unet.state_dict(), os.path.join(save_dir, "unet.pth"))
+    torch.save(model.style_encoder.state_dict(), os.path.join(save_dir, "style_encoder.pth"))
+    torch.save(model.content_encoder.state_dict(), os.path.join(save_dir, "content_encoder.pth"))
+    # Save composite checkpoint with optimizer and scheduler
+    composite = {
+        "unet": model.unet.state_dict(),
+        "style_encoder": model.style_encoder.state_dict(),
+        "content_encoder": model.content_encoder.state_dict(),
+        "optimizer": optimizer.state_dict() if optimizer is not None else None,
+        "lr_scheduler": lr_scheduler.state_dict() if lr_scheduler is not None else None,
+        "global_step": global_step
+    }
+    torch.save(composite, os.path.join(save_dir, "checkpoint.pth"))
 
 
 def main():
@@ -65,35 +184,87 @@ def main():
         datefmt="%m/%d/%Y %H:%M:%S",
         level=logging.INFO)
 
-    # Ser training seed
+    # Set training seed
     if args.seed is not None:
         set_seed(args.seed)
 
-    # Load model and noise_scheduler
+    # -------------------------
+    # Build model & noise scheduler (models constructed but not yet moved to device)
+    # -------------------------
     unet = build_unet(args=args)
     style_encoder = build_style_encoder(args=args)
     content_encoder = build_content_encoder(args=args)
     noise_scheduler = build_ddpm_scheduler(args)
-    if args.phase_2:
-        unet.load_state_dict(torch.load(f"{args.phase_1_ckpt_dir}/unet.pth"))
-        style_encoder.load_state_dict(torch.load(f"{args.phase_1_ckpt_dir}/style_encoder.pth"))
-        content_encoder.load_state_dict(torch.load(f"{args.phase_1_ckpt_dir}/content_encoder.pth"))
+    # If args.phase_2 and no resume checkpoint, previous code loads phase 1 ckpt below.
 
+    # -------------------------
+    # Check for existing checkpoint folders (latest)
+    # -------------------------
+    resume_ckpt_dir, resume_step = find_latest_checkpoint(args.output_dir)
+    composite_restore_info = None
+    resumed = False
+
+    if resume_ckpt_dir:
+        print(f"🔍 Found existing checkpoint directory: {resume_ckpt_dir} (detected step {resume_step})")
+        # Try composite checkpoint load (model parts + optimizer/scheduler + step)
+        composite_restore_info = load_composite_checkpoint_if_exists(
+            model=type("tmp", (), {"unet": unet, "style_encoder": style_encoder, "content_encoder": content_encoder}),
+            optimizer=None,
+            lr_scheduler=None,
+            ckpt_dir=resume_ckpt_dir,
+            accelerator=accelerator
+        )
+        if composite_restore_info and isinstance(composite_restore_info, dict) and composite_restore_info.get("step", 0) > 0:
+            # We loaded model state dicts into the temp model above; now copy into actual models
+            # (in practice we loaded directly into the unet/style/content above)
+            resumed = True
+            print(f"🔁 Composite checkpoint detected; model weights loaded (will restore optimizer/scheduler after accelerator.prepare()).")
+        else:
+            # Try old-style model-weight-only load as fallback
+            loaded_any = load_model_weights_only(unet, style_encoder, content_encoder, resume_ckpt_dir, map_location=torch.device("cpu"))
+            if loaded_any:
+                resumed = True
+                print(f"🔁 Legacy model weights found and loaded from {resume_ckpt_dir} (optimizer/scheduler not available).")
+            else:
+                print(f"ℹ️ Found checkpoint dir but no usable checkpoint files were loaded. Will try phase_1_ckpt (if phase 2) or start from scratch.")
+
+    else:
+        print("ℹ️ No previous checkpoints found in output_dir.")
+
+    # If not resuming from composite and this is phase_2, load phase_1 weights as original behavior
+    if not resumed and args.phase_2:
+        try:
+            unet.load_state_dict(torch.load(f"{args.phase_1_ckpt_dir}/unet.pth", map_location=torch.device("cpu")))
+            style_encoder.load_state_dict(torch.load(f"{args.phase_1_ckpt_dir}/style_encoder.pth", map_location=torch.device("cpu")))
+            content_encoder.load_state_dict(torch.load(f"{args.phase_1_ckpt_dir}/content_encoder.pth", map_location=torch.device("cpu")))
+            print(f"Loaded Phase 1 checkpoint from {args.phase_1_ckpt_dir}")
+            logging.info(f"Loaded Phase 1 checkpoint from {args.phase_1_ckpt_dir}")
+        except Exception as e:
+            print(f"⚠️ Failed to load Phase 1 ckpt: {e}")
+            logging.warning(f"Failed to load Phase 1 ckpt: {e}")
+
+    # Build model wrapper
     model = FontDiffuserModel(
         unet=unet,
         style_encoder=style_encoder,
         content_encoder=content_encoder)
 
-    # Build content perceptaual Loss
+    # Build content perceptual Loss
     perceptual_loss = ContentPerceptualLoss()
 
-    # Load SCR module for supervision
+    # Load SCR module for supervision (Phase 2)
     if args.phase_2:
         scr = build_scr(args=args)
-        scr.load_state_dict(torch.load(args.scr_ckpt_path))
-        scr.requires_grad_(False)
+        try:
+            scr.load_state_dict(torch.load(args.scr_ckpt_path, map_location=torch.device("cpu")))
+            scr.requires_grad_(False)
+        except Exception as e:
+            print(f"⚠️ Failed to load SCR checkpoint {args.scr_ckpt_path}: {e}")
+            logging.warning(f"Failed to load SCR checkpoint {args.scr_ckpt_path}: {e}")
 
-    # Load the datasets
+    # -------------------------
+    # Dataset & Dataloader
+    # -------------------------
     content_transforms = transforms.Compose(
         [transforms.Resize(args.content_image_size, 
                            interpolation=transforms.InterpolationMode.BILINEAR),
@@ -136,12 +307,44 @@ def main():
         num_warmup_steps=args.lr_warmup_steps * args.gradient_accumulation_steps,
         num_training_steps=args.max_train_steps * args.gradient_accumulation_steps,)
 
-    # Accelerate preparation
+    # Accelerate preparation (model/optimizer/dataloader/scheduler)
     model, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
         model, optimizer, train_dataloader, lr_scheduler)
-    ## move scr module to the target deivces
+    ## move scr module to the target devices
     if args.phase_2:
         scr = scr.to(accelerator.device)
+
+    # If composite restore info exists (from earlier) - apply optimizer & scheduler states now
+    restored_step = 0
+    if isinstance(composite_restore_info, dict):
+        # composite_restore_info was returned in earlier call if composite checkpoint present
+        restored_step = int(composite_restore_info.get("step", 0))
+        restored_opt_state = composite_restore_info.get("optimizer", None)
+        restored_sched_state = composite_restore_info.get("lr_scheduler", None)
+        if restored_opt_state is not None:
+            try:
+                optimizer.load_state_dict(restored_opt_state)
+                print("✅ Optimizer state restored from composite checkpoint.")
+            except Exception as e:
+                print(f"⚠️ Failed to restore optimizer state: {e}")
+        if restored_sched_state is not None and lr_scheduler is not None:
+            try:
+                lr_scheduler.load_state_dict(restored_sched_state)
+                print("✅ LR scheduler state restored from composite checkpoint.")
+            except Exception as e:
+                print(f"⚠️ Failed to restore lr_scheduler state: {e}")
+    else:
+        # If not composite and we did find legacy saved model files, resume_step = resume_step (from find_latest_checkpoint)
+        if resume_ckpt_dir and resume_step > 0:
+            restored_step = resume_step
+            # advance lr_scheduler by restored_step as a best-effort (since we don't have exact scheduler state)
+            if lr_scheduler is not None and restored_step > 0:
+                try:
+                    print(f"⏩ Advancing LR scheduler by {restored_step} steps (best-effort) to align with resumed global_step...")
+                    for _ in range(restored_step):
+                        lr_scheduler.step()
+                except Exception as e:
+                    print(f"⚠️ Could not advance lr_scheduler: {e}")
 
     # The trackers initializes automatically on the main process.
     if accelerator.is_main_process:
@@ -156,7 +359,13 @@ def main():
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
     num_train_epochs = math.ceil(args.max_train_steps / num_update_steps_per_epoch)
 
-    global_step = 0
+    # initialize global_step based on restored_step
+    global_step = int(restored_step) if restored_step else 0
+    if global_step > 0:
+        progress_bar.update(global_step)
+        print(f"🔁 Resuming training from global_step = {global_step}")
+
+    # Training loop
     for epoch in range(num_train_epochs):
         train_loss = 0.0
         for step, samples in enumerate(train_dataloader):
@@ -175,7 +384,6 @@ def main():
                 timesteps = timesteps.long()
 
                 # Add noise to the target_images according to the noise magnitude at each timestep
-                # (this is the forward diffusion process)
                 noisy_target_images = noise_scheduler.add_noise(target_images, noise, timesteps)
 
                 # Classifier-free training strategy
@@ -250,12 +458,23 @@ def main():
                     if global_step % args.ckpt_interval == 0:
                         save_dir = f"{args.output_dir}/global_step_{global_step}"
                         os.makedirs(save_dir, exist_ok=True)
-                        torch.save(model.unet.state_dict(), f"{save_dir}/unet.pth")
-                        torch.save(model.style_encoder.state_dict(), f"{save_dir}/style_encoder.pth")
-                        torch.save(model.content_encoder.state_dict(), f"{save_dir}/content_encoder.pth")
-                        torch.save(model, f"{save_dir}/total_model.pth")
-                        logging.info(f"[{time.strftime('%Y-%m-%d %H:%M:%S',time.localtime(time.time()))}] Save the checkpoint on global step {global_step}")
-                        print("Save the checkpoint on global step {}".format(global_step))
+                        # Save model weights + composite checkpoint
+                        try:
+                            save_composite_checkpoint(model, optimizer, lr_scheduler, global_step, save_dir)
+                            logging.info(f"[{time.strftime('%Y-%m-%d %H:%M:%S',time.localtime(time.time()))}] Saved composite checkpoint on global step {global_step}")
+                            print("✅ Saved composite checkpoint on global step {}".format(global_step))
+                        except Exception as e:
+                            print(f"⚠️ Failed saving composite checkpoint: {e}")
+                            # fallback: save separate model weights only
+                            try:
+                                torch.save(model.unet.state_dict(), f"{save_dir}/unet.pth")
+                                torch.save(model.style_encoder.state_dict(), f"{save_dir}/style_encoder.pth")
+                                torch.save(model.content_encoder.state_dict(), f"{save_dir}/content_encoder.pth")
+                                torch.save(model, f"{save_dir}/total_model.pth")
+                                logging.info(f"[{time.strftime('%Y-%m-%d %H:%M:%S',time.localtime(time.time()))}] Save the legacy checkpoint on global step {global_step}")
+                                print("Saved legacy checkpoint on global step {}".format(global_step))
+                            except Exception as e2:
+                                print(f"‼️ Failed to save any checkpoint: {e2}")
 
             logs = {"step_loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
             if global_step % args.log_interval == 0:

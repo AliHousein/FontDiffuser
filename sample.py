@@ -38,7 +38,7 @@ def arg_parse():
     parser.add_argument("--save_image", action="store_true")
     parser.add_argument("--save_image_dir", type=str, default=None,
                         help="The saving directory.")
-    parser.add_argument("--device", type=str, default="cuda:0")
+    parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--ttf_path", type=str, default="ttf/KaiXinSongA.ttf")
     args = parser.parse_args()
     style_image_size = args.style_image_size
@@ -94,11 +94,12 @@ def image_process(args, content_image=None, style_image=None):
 def load_fontdiffuer_pipeline(args):
     # Load the model state_dict
     unet = build_unet(args=args)
-    unet.load_state_dict(torch.load(f"{args.ckpt_dir}/unet.pth"))
+    unet.load_state_dict(torch.load(f"{args.ckpt_dir}/unet.pth", map_location=torch.device("cpu")))
     style_encoder = build_style_encoder(args=args)
-    style_encoder.load_state_dict(torch.load(f"{args.ckpt_dir}/style_encoder.pth"))
+    style_encoder.load_state_dict(torch.load(f"{args.ckpt_dir}/style_encoder.pth", map_location=torch.device("cpu")))
     content_encoder = build_content_encoder(args=args)
-    content_encoder.load_state_dict(torch.load(f"{args.ckpt_dir}/content_encoder.pth"))
+    content_encoder.load_state_dict(torch.load(f"{args.ckpt_dir}/content_encoder.pth", map_location=torch.device("cpu")))
+
     model = FontDiffuserModelDPM(
         unet=unet,
         style_encoder=style_encoder,
