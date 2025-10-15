@@ -288,8 +288,18 @@ def main():
             style_transforms, 
             target_transforms],
         scr=args.phase_2)
+    
+    num_workers = min(8, (os.cpu_count() or 2) // 2)  # e.g., 4 if system has 8 cores
     train_dataloader = torch.utils.data.DataLoader(
-        train_font_dataset, shuffle=True, batch_size=args.train_batch_size, collate_fn=CollateFN())
+        train_font_dataset,
+        shuffle=True,
+        batch_size=args.train_batch_size,
+        collate_fn=CollateFN(),
+        num_workers=num_workers,
+        pin_memory=True,
+        prefetch_factor=2,
+        persistent_workers=True
+    )
     
     # Build optimizer and learning rate
     if args.scale_lr:
@@ -387,11 +397,11 @@ def main():
                 noisy_target_images = noise_scheduler.add_noise(target_images, noise, timesteps)
 
                 # Classifier-free training strategy
-                context_mask = torch.bernoulli(torch.zeros(bsz) + args.drop_prob)
-                for i, mask_value in enumerate(context_mask):
-                    if mask_value==1:
-                        content_images[i, :, :, :] = 1
-                        style_images[i, :, :, :] = 1
+                # context_mask on device and boolean indexing
+                context_mask = torch.bernoulli(torch.full((bsz,), args.drop_prob, device=target_images.device)).bool()
+                if context_mask.any():
+                    content_images[context_mask] = 1.0
+                    style_images[context_mask] = 1.0
 
                 # Predict the noise residual and compute loss
                 noise_pred, offset_out_sum = model(
