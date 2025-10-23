@@ -249,8 +249,16 @@ def main():
         style_encoder=style_encoder,
         content_encoder=content_encoder)
 
-    # Build content perceptual Loss
+    # Build content perceptual Loss and move to device (avoid CPU-GPU transfers)
     perceptual_loss = ContentPerceptualLoss()
+    try:
+        perceptual_loss = perceptual_loss.to(accelerator.device)
+        perceptual_loss.eval()
+        for p in perceptual_loss.parameters():
+            p.requires_grad = False
+        print("✅ Perceptual loss moved to device and frozen.")
+    except Exception as e:
+        print(f"⚠️ Perceptual loss device move/freeze failed: {e}")
 
     # Load SCR module for supervision (Phase 2)
     if args.phase_2:
@@ -288,7 +296,6 @@ def main():
             style_transforms, 
             target_transforms],
         scr=args.phase_2)
-    
     num_workers = min(8, (os.cpu_count() or 2) // 2)  # e.g., 4 if system has 8 cores
     train_dataloader = torch.utils.data.DataLoader(
         train_font_dataset,
@@ -300,7 +307,6 @@ def main():
         prefetch_factor=2,
         persistent_workers=True
     )
-    
     # Build optimizer and learning rate
     if args.scale_lr:
         args.learning_rate = (
@@ -396,12 +402,12 @@ def main():
                 # Add noise to the target_images according to the noise magnitude at each timestep
                 noisy_target_images = noise_scheduler.add_noise(target_images, noise, timesteps)
 
-                # Classifier-free training strategy
-                # context_mask on device and boolean indexing
+                # Classifier-free training strategy (vectorized, device-aware)
                 context_mask = torch.bernoulli(torch.full((bsz,), args.drop_prob, device=target_images.device)).bool()
                 if context_mask.any():
                     content_images[context_mask] = 1.0
                     style_images[context_mask] = 1.0
+
 
                 # Predict the noise residual and compute loss
                 noise_pred, offset_out_sum = model(
