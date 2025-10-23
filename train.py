@@ -326,9 +326,17 @@ def main():
     # Accelerate preparation (model/optimizer/dataloader/scheduler)
     model, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
         model, optimizer, train_dataloader, lr_scheduler)
-    ## move scr module to the target devices
+
+    ## move scr module to the target device and freeze it for inference (Phase 2 only)
     if args.phase_2:
         scr = scr.to(accelerator.device)
+        try:
+            scr.eval()  # disable dropout, batchnorm updates, etc.
+            scr.requires_grad_(False)  # freeze all parameters (no gradients)
+            print("✅ SCR moved to device and frozen (eval mode enabled).")
+        except Exception as e:
+            print(f"⚠️ Could not set SCR eval/freeze: {e}")
+
 
     # If composite restore info exists (from earlier) - apply optimizer & scheduler states now
     restored_step = 0
