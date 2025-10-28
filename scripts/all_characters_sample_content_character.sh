@@ -1,0 +1,14 @@
+python sample_latin.py \
+    --ckpt_dir="ckpt/" \
+    --style_image_path="data_examples/sampling/example_style.jpg" \
+    --save_image \
+    --character_input \
+    --ttf_path="fonts/NotoSans-VariableFont_wdth,wght.ttf" \
+    --algorithm_type="dpmsolver++" \
+    --guidance_type="classifier-free" \
+    --guidance_scale=7.5 \
+    --num_inference_steps=50 \
+    --method="multistep" \
+    --content_image_size=96 \
+    --style_image_size=96 \
+    --resolution=96
